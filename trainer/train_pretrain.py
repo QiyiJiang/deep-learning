@@ -20,6 +20,18 @@ from trainer.trainer_utils import get_lr, Logger, is_main_process, lm_checkpoint
 warnings.filterwarnings('ignore')
 
 
+_TRAINER_DIR = os.path.dirname(__file__)
+_PROJECT_ROOT = os.path.abspath(os.path.join(_TRAINER_DIR, ".."))
+
+
+def _resolve_path(path: str) -> str:
+    if path is None:
+        return path
+    if os.path.isabs(path):
+        return path
+    return os.path.abspath(os.path.join(_TRAINER_DIR, path))
+
+
 def train_epoch(epoch, loader, iters, start_step=0, wandb=None):
     loss_fct = nn.CrossEntropyLoss(reduction='none')
     start_time = time.time()
@@ -105,6 +117,8 @@ if __name__ == "__main__":
     parser.add_argument("--use_wandb", action="store_true", help="是否使用wandb")
     parser.add_argument("--wandb_project", type=str, default="MiniMind-Pretrain", help="wandb项目名")
     args = parser.parse_args()
+    args.save_dir = _resolve_path(args.save_dir)
+    args.data_path = _resolve_path(args.data_path)
 
     # ========== 1. 初始化环境和随机种子 ==========
     local_rank = init_distributed_mode()

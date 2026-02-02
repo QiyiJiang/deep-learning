@@ -13,6 +13,33 @@ from transformers import AutoTokenizer
 from model.model_minimind import MiniMindForCausalLM
 
 
+_TRAINER_DIR = os.path.dirname(__file__)
+_PROJECT_ROOT = os.path.abspath(os.path.join(_TRAINER_DIR, ".."))
+
+
+def _resolve_path(path: str) -> str:
+    """
+    将相对路径稳定地解析为绝对路径：
+    - 优先按 `trainer/` 目录解析（保持历史默认：'../model' 等）
+    - 若不存在，再按项目根目录解析（支持 'model'、'out' 这种写法）
+    """
+    if path is None:
+        return path
+    if os.path.isabs(path):
+        return path
+
+    cand_from_trainer = os.path.abspath(os.path.join(_TRAINER_DIR, path))
+    if os.path.exists(cand_from_trainer):
+        return cand_from_trainer
+
+    cand_from_root = os.path.abspath(os.path.join(_PROJECT_ROOT, path))
+    if os.path.exists(cand_from_root):
+        return cand_from_root
+
+    # 都不存在时仍返回按 trainer 目录解析的候选，便于报错信息更直观
+    return cand_from_trainer
+
+
 def is_main_process():
     return not dist.is_initialized() or dist.get_rank() == 0
 
@@ -103,6 +130,9 @@ def lm_checkpoint(lm_config, weight='full_sft', model=None, optimizer=None, epoc
 
 
 def init_model(lm_config, from_weight='pretrain', tokenizer_path='../model', save_dir='../out', device='cuda'):
+    tokenizer_path = _resolve_path(tokenizer_path)
+    save_dir = _resolve_path(save_dir)
+
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
     model = MiniMindForCausalLM(lm_config)
 
