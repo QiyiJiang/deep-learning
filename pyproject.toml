@@ -31,6 +31,7 @@ dependencies = [
     "tiktoken==0.10.0",
     "torch==2.6.0",
     "torchvision==0.21.0",
+    "torchviz>=0.0.3",
     "transformers==4.57.1",
     "trl==0.13.0",
     "ujson>=5.9.0",
