@@ -1,7 +1,9 @@
 import math
-from sympy import tensor
 import torch
+from sympy import tensor
 from torch import nn
+import torch.nn.functional as F
+
 
 class BaseAttention(nn.Module):
     def __init__(self, hidden_size: int):
@@ -269,6 +271,239 @@ FlashAttention 的核心是不把中间结果写回显存
 FlashAttention 通过按照 按 block 计算 QKᵀ → softmax → *V ,并在寄存器 / shared memory 中完成全部流程,把多个 kernel 融合成一个,从而极大减少显存带宽消耗和 kernel launch 次数。
 Mask(causal / padding)在计算中直接融合,而不是事后用 -inf 修补。性能提升的本质来源是 内存访问模式优化 + kernel fusion,而不是数学公式变化。
 """
+
+"""
+TODO(P0,必须):
+- 将基于 torch.cat 的 KV cache 改为预分配缓存
+- cached_k / cached_v 形状统一为 [B, num_heads, max_seq_len, head_dim]
+- 引入 cache_pos 指针,在 cache_pos 位置原地写入 k / v
+- 推理模式下强制 seq_len == 1
+- 使用 cache_pos 对历史 k / v 做切片,避免 O(T) 的 concat 操作
+- 实现真正的 O(1) 增量解码推理
+"""
+class IncrementalKVAttention(nn.Module):
+    def __init__(self, hidden_size: int, num_heads: int, max_seq_len: int):
+        super().__init__()
+
+        assert hidden_size % num_heads == 0
+        self.hidden_size = hidden_size
+        self.num_heads = num_heads
+        self.head_dim = self.hidden_size // self.num_heads
+        self.max_seq_len = max_seq_len
+        
+        self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
+        self.k_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
+        self.v_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
+        self.o_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
+
+    def _softmax(self, x, dim=-1):
+        x_max = torch.max(x, dim=dim, keepdim=True).values
+        exp_x = torch.exp(x - x_max)
+        return exp_x / exp_x.sum(dim=dim, keepdim=True)
+
+    def forward(self, x, seq_lengths=None, cached=None, cached_pos=None, is_training=False):
+
+        batch_size, seq_len, _ = x.shape
+
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
+        q = q.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+
+        if is_training is False:
+            assert seq_len == 1
+
+            if cached is None:
+                cached = {
+                    "k": torch.zeros(batch_size, self.num_heads, self.max_seq_len, self.head_dim, device=x.device, dtype=x.dtype),
+                    "v": torch.zeros(batch_size, self.num_heads, self.max_seq_len, self.head_dim, device=x.device, dtype=x.dtype),
+                }
+                cached_pos = 0
+
+            cached["k"][:, :, cached_pos, :] = k[:, :, 0, :]
+            cached["v"][:, :, cached_pos, :] = v[:, :, 0, :]
+            k = cached["k"][:, :, :cached_pos+1, :]
+            v = cached["v"][:, :, :cached_pos+1, :]
+
+            scores = torch.matmul(q, k.transpose(-2, -1))
+            scores = scores / math.sqrt(self.head_dim)
+        else:
+            total_len = k.size(2)
+            causal_mask = torch.triu(torch.ones(seq_len, total_len, dtype=torch.bool, device=x.device), diagonal=1)
+            causal_mask = causal_mask[None, None, :, :]  # [1,1,L,L]
+
+            if seq_lengths is not None:
+                # padding mask
+                padding_mask = torch.arange(total_len, device=x.device)[None, :] >= seq_lengths[:, None]  # [B,L]
+                padding_mask = padding_mask[:, None, None, :]  # [B,1,1,L]
+                final_mask = causal_mask | padding_mask
+            else:
+                final_mask = causal_mask
+
+            scores = torch.matmul(q, k.transpose(-2, -1))
+            scores = scores / math.sqrt(self.head_dim)
+            scores = scores.masked_fill(final_mask == 1, float("-inf"))
+
+        att = self._softmax(scores, dim=-1)
+        att = torch.matmul(att, v)
+
+        att = att.transpose(1, 2).contiguous()
+        att = att.view(batch_size, seq_len, self.hidden_size)
+        att = self.o_proj(att)
+
+        return att, cached, cached_pos+1
+
+
+"""
+TODO(P1,性能关键):
+- 合并 Q / K / V 为一个线性层:Linear(hidden_size, 3 * hidden_size)
+- 使用 chunk(3, dim=-1) 拆分 fused QKV
+- 删除自定义 _softmax 实现
+- 使用 torch.softmax 或 scaled_dot_product_attention
+"""
+class FusedQKVAttention(nn.Module):
+    def __init__(self, hidden_size: int, num_heads: int, max_seq_len: int):
+        super().__init__()
+
+        assert hidden_size % num_heads == 0
+        self.hidden_size = hidden_size
+        self.num_heads = num_heads
+        self.head_dim = self.hidden_size // self.num_heads
+        self.max_seq_len = max_seq_len
+        
+        self.qkv_proj = nn.Linear(self.hidden_size, 3* self.num_heads * self.head_dim, bias=False)
+        self.o_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
+
+    def forward(self, x, seq_lengths=None, cached=None, cached_pos=None, is_training=False):
+
+        batch_size, seq_len, _ = x.shape
+
+        qkv = self.qkv_proj(x)
+        q, k, v = qkv.chunk(3, dim=-1)
+        q = q.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+
+        if is_training is False:
+            assert seq_len == 1
+
+            if cached is None:
+                cached = {
+                    "k": torch.zeros(batch_size, self.num_heads, self.max_seq_len, self.head_dim, device=x.device, dtype=x.dtype),
+                    "v": torch.zeros(batch_size, self.num_heads, self.max_seq_len, self.head_dim, device=x.device, dtype=x.dtype),
+                }
+                cached_pos = 0
+
+            cached["k"][:, :, cached_pos, :] = k[:, :, 0, :]
+            cached["v"][:, :, cached_pos, :] = v[:, :, 0, :]
+            k = cached["k"][:, :, :cached_pos+1, :]
+            v = cached["v"][:, :, :cached_pos+1, :]
+
+            scores = torch.matmul(q, k.transpose(-2, -1))
+            scores = scores / math.sqrt(self.head_dim)
+        else:
+            total_len = k.size(2)
+            causal_mask = torch.triu(torch.ones(seq_len, total_len, dtype=torch.bool, device=x.device), diagonal=1)
+            causal_mask = causal_mask[None, None, :, :]  # [1,1,L,L]
+
+            if seq_lengths is not None:
+                # padding mask
+                padding_mask = torch.arange(total_len, device=x.device)[None, :] >= seq_lengths[:, None]  # [B,L]
+                padding_mask = padding_mask[:, None, None, :]  # [B,1,1,L]
+                final_mask = causal_mask | padding_mask
+            else:
+                final_mask = causal_mask
+
+            scores = torch.matmul(q, k.transpose(-2, -1))
+            scores = scores / math.sqrt(self.head_dim)
+            scores = scores.masked_fill(final_mask == 1, float("-inf"))
+
+        att = torch.softmax(scores, dim=-1)
+        att = torch.matmul(att, v)
+
+        att = att.transpose(1, 2).contiguous()
+        att = att.view(batch_size, seq_len, self.hidden_size)
+        att = self.o_proj(att)
+
+        return att, cached, cached_pos+1
+
+
+"""
+TODO(P2,FlashAttention / AMP 准备):
+- 推理模式下不再构造 causal mask(单 token 天然满足因果性)
+- padding mask 仅在训练模式下使用
+- 确保 attention 相关张量布局为 [B, H, L, D] 且 contiguous
+- 减少不必要的 transpose / permute 操作
+"""
+class FlashAttentionFusedAttention(nn.Module):
+    def __init__(self, hidden_size: int, num_heads: int, max_seq_len: int, dropout: int):
+        super().__init__()
+
+        assert hidden_size % num_heads == 0
+        self.hidden_size = hidden_size
+        self.num_heads = num_heads
+        self.head_dim = hidden_size // num_heads
+        self.max_seq_len = max_seq_len
+
+        # fused QKV
+        self.qkv_proj = nn.Linear(hidden_size, 3 * hidden_size, bias=False)
+        self.o_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.dropout = dropout if dropout else 0.0
+        self.resid_dropout = nn.Dropout(self.dropout)
+
+    def forward(self, x, seq_lengths=None, cached=None, cached_pos=None, is_training=False):
+        batch_size, seq_len, _ = x.shape
+
+        # fused QKV
+        qkv = self.qkv_proj(x)
+        q, k, v = qkv.chunk(3, dim=-1)
+
+        # reshape为 [B,H,L,D] 并 contiguous
+        q = q.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
+        k = k.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
+        v = v.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
+
+        if is_training:
+            # 训练模式：构造 causal + padding mask
+            total_len = k.size(2)
+            attn_mask = torch.triu(torch.ones(seq_len, total_len, device=x.device, dtype=torch.bool), diagonal=1)
+            attn_mask = attn_mask[None, None, :, :]  # [1,1,L,L]
+
+            if seq_lengths is not None:
+                padding_mask = torch.arange(total_len, device=x.device)[None, :] >= seq_lengths[:, None]  # [B,L]
+                padding_mask = padding_mask[:, None, None, :]  # [B,1,1,L]
+                attn_mask = attn_mask | padding_mask
+        else:
+            # 推理模式：seq_len=1, 使用 KV cache
+            assert seq_len == 1
+            if cached is None:
+                cached = {
+                    "k": torch.zeros(batch_size, self.num_heads, self.max_seq_len, self.head_dim,
+                                     device=x.device, dtype=x.dtype),
+                    "v": torch.zeros(batch_size, self.num_heads, self.max_seq_len, self.head_dim,
+                                     device=x.device, dtype=x.dtype),
+                }
+                cached_pos = 0
+
+            # 更新缓存
+            cached["k"][:, :, cached_pos, :] = k[:, :, 0, :]
+            cached["v"][:, :, cached_pos, :] = v[:, :, 0, :]
+            k = cached["k"][:, :, :cached_pos + 1, :]
+            v = cached["v"][:, :, :cached_pos + 1, :]
+            attn_mask = None  # 单 token 自然满足 causal
+
+        # scaled dot product attention
+        att = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, is_causal=False, dropout_p=self.dropout if is_training else 0.0)
+
+        # 输出 reshape [B,H,L,D] -> [B,L,H*D]
+        att = att.transpose(1, 2).contiguous().reshape(batch_size, seq_len, self.num_heads * self.head_dim)
+        att = self.o_proj(att)
+        att = self.resid_dropout(att)
+
+        return att, cached, cached_pos + 1 if not is_training else None
+
 
 if __name__ == "__main__":
     pass
