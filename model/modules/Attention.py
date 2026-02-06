@@ -462,7 +462,9 @@ class FlashAttentionFusedAttention(nn.Module):
         x: torch.Tensor,
         seq_lengths: Optional[torch.Tensor] = None,
         cached: Optional[Dict[str, torch.Tensor]] = None,
-        cached_pos: Optional[int] = None
+        cached_pos: Optional[int] = None,
+        freqs_cos: Optional[torch.Tensor] = None,
+        freqs_sin: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, Optional[Dict[str, torch.Tensor]], Optional[int]]:
         """
         前向传播，支持训练和推理两种模式。
@@ -489,6 +491,10 @@ class FlashAttentionFusedAttention(nn.Module):
         q = q.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
         k = k.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
         v = v.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
+        
+        if freqs_cos is not None and freqs_sin is not None:
+            from model.modules.step_rope import apply_rotary_pos_emb
+            q, k = apply_rotary_pos_emb(q, k, freqs_cos, freqs_sin)
 
         if self.training:
             # 训练模式：构造 causal + padding mask

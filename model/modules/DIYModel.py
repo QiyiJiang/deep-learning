@@ -8,6 +8,7 @@ from typing import Optional, Tuple, List, Dict, Union
 from model.modules.RMSNorm import RMSNorm
 from model.modules.ModelBlock import ModelBlock
 from model.modules.modelconfig import DIYCofig
+from model.modules.step_rope import precompute_freqs_cis
 
 class DIYModel(nn.Module):
     """DIY 模型主干：embed → ModelBlock × N → RMSNorm，输出 hidden_states。"""
@@ -23,6 +24,16 @@ class DIYModel(nn.Module):
             for _ in range(config.num_layers)
         ])
         self.norm = RMSNorm(config)
+
+        head_dim = config.hidden_size // config.num_heads
+        freqs_cos, freqs_sin = precompute_freqs_cis(
+            dim=head_dim,
+            end=config.max_seq_len,
+            rope_base=1e6
+        )
+        self.register_buffer('freqs_cos', freqs_cos, persistent=False)
+        self.register_buffer('freqs_sin', freqs_sin, persistent=False)
+
 
     def forward(
         self, 
@@ -56,9 +67,33 @@ class DIYModel(nn.Module):
         presents = [] if (not self.training and use_cache) else None
 
         for layer_idx, (layer, past_kv) in enumerate(zip(self.layers, past_key_values)):
+            # 确定 RoPE 的位置范围
+            if self.training:
+                # 训练模式：使用整个序列
+                start_pos = 0
+                freqs_cos_slice = self.freqs_cos[:seq_len]
+                freqs_sin_slice = self.freqs_sin[:seq_len]
+            else:
+                # 推理模式：根据 cached_pos 确定位置
+                if past_kv and past_kv[1] is not None:
+                    # 增量解码：从 cached_pos 开始
+                    start_pos = past_kv[1]
+                    freqs_cos_slice = self.freqs_cos[start_pos:start_pos + seq_len]
+                    freqs_sin_slice = self.freqs_sin[start_pos:start_pos + seq_len]
+                else:
+                    # 第一次 forward：从 0 开始
+                    start_pos = 0
+                    freqs_cos_slice = self.freqs_cos[:seq_len]
+                    freqs_sin_slice = self.freqs_sin[:seq_len]
+            
             if self.training:
                 hidden_states = layer(
-                    hidden_states, seq_lengths=seq_lengths, cached=None, cached_pos=None
+                    hidden_states, 
+                    seq_lengths=seq_lengths, 
+                    cached=None, 
+                    cached_pos=None,
+                    freqs_cos=freqs_cos_slice,
+                    freqs_sin=freqs_sin_slice 
                 )
             else:
                 hidden_states, cached, cached_pos = layer(
@@ -66,6 +101,8 @@ class DIYModel(nn.Module):
                     seq_lengths=seq_lengths, 
                     cached=past_kv[0] if past_kv else None,
                     cached_pos=past_kv[1] if past_kv else None, 
+                    freqs_cos=freqs_cos_slice,
+                    freqs_sin=freqs_sin_slice 
                 )
                 if use_cache:
                     presents.append((cached, cached_pos))
