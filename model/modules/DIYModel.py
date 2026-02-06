@@ -3,26 +3,47 @@ from math import log
 import torch
 from torch import nn
 import torch.nn.functional as F
+from torch.utils import checkpoint
+from typing import Optional, Tuple, List, Dict, Union
 from model.modules.RMSNorm import RMSNorm
 from model.modules.ModelBlock import ModelBlock
+from model.modules.modelconfig import DIYCofig
 
 class DIYModel(nn.Module):
-    def __init__(self, vocab_size: int, num_layers: int, hidden_size: int, 
-                 num_heads: int, max_seq_len: int, dropout: float = 0.1):
+    """DIY 模型主干：embed → ModelBlock × N → RMSNorm，输出 hidden_states。"""
+    def __init__(self, config: DIYCofig):
         super().__init__()
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self.embed_tokens = nn.Embedding(vocab_size, hidden_size)
-        self.dropout = nn.Dropout(dropout)
+        self.hidden_size = config.hidden_size
+        self.num_layers = config.num_layers
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
+        self.dropout = nn.Dropout(config.dropout)
 
         self.layers = nn.ModuleList([
-            ModelBlock(hidden_size, num_heads, max_seq_len, dropout) 
-            for _ in range(num_layers)
+            ModelBlock(config) 
+            for _ in range(config.num_layers)
         ])
-        self.norm = RMSNorm(hidden_size)
+        self.norm = RMSNorm(config)
 
-    def forward(self, input_ids, seq_lengths=None, past_key_values=None, use_cache=False):
+    def forward(
+        self, 
+        input_ids: torch.Tensor,
+        seq_lengths: Optional[torch.Tensor] = None,
+        past_key_values: Optional[List[Optional[Tuple[Dict[str, torch.Tensor], int]]]] = None,
+        use_cache: bool = False
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, List[Tuple[Dict[str, torch.Tensor], int]]]]:
+        """
+        前向传播。
         
+        Args:
+            input_ids: Token IDs，shape (batch_size, seq_len)
+            seq_lengths: 每个样本的有效长度，shape (batch_size,)，None 表示无 padding
+            past_key_values: KV cache，每层一个 (cached_dict, cached_pos) tuple 或 None
+            use_cache: 是否返回 presents（用于增量解码）
+        
+        Returns:
+            训练时返回 hidden_states，shape (batch_size, seq_len, hidden_size)
+            推理且 use_cache=True 时返回 (hidden_states, presents)
+        """
         batch_size, seq_len = input_ids.shape
         if past_key_values is None:
             past_key_values = [None] * self.num_layers
@@ -58,15 +79,41 @@ class DIYModel(nn.Module):
 
 
 class DIYForCausalLM(nn.Module):
-    def __init__(self, vocab_size: int, num_layers: int, hidden_size: int, 
-                 num_heads: int, max_seq_len: int, dropout: float = 0.1):
+    """DIY 因果语言模型：DIYModel + lm_head，用于训练和生成。"""
+    
+    def __init__(self, config: DIYCofig):
         super().__init__()
         
-        self.vocab_size = vocab_size
-        self.model = DIYModel(vocab_size, num_layers, hidden_size, num_heads, max_seq_len, dropout)
-        self.lm_head = nn.Linear(hidden_size, vocab_size, bias=False)
+        self.vocab_size = config.vocab_size
+        self.model = DIYModel(config)
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.lm_head.weight = self.model.embed_tokens.weight
 
-    def forward(self, input_ids, seq_lengths=None, past_key_values=None, use_cache=False):
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        seq_lengths: Optional[torch.Tensor] = None,
+        past_key_values: Optional[List[Optional[Tuple[Dict[str, torch.Tensor], int]]]] = None,
+        use_cache: bool = False
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, List[Tuple[Dict[str, torch.Tensor], int]]]]:
+        """
+        前向传播，返回 logits。
+        
+        Args:
+            input_ids: Token IDs，shape (batch_size, seq_len)
+            attention_mask: Attention mask，1=有效，0=padding，shape (batch_size, seq_len)
+            seq_lengths: 每个样本的有效长度，shape (batch_size,)，与 attention_mask 二选一
+            past_key_values: KV cache，用于增量解码
+            use_cache: 是否返回 presents（用于增量解码）
+        
+        Returns:
+            训练时返回 logits，shape (batch_size, seq_len, vocab_size)
+            推理且 use_cache=True 时返回 (logits, presents)
+        """
+        if attention_mask is not None:
+            seq_lengths = attention_mask.sum(dim=1)
+
         out = self.model(input_ids, seq_lengths=seq_lengths, past_key_values=past_key_values, 
                          use_cache=use_cache)
 
@@ -84,19 +131,15 @@ class DIYForCausalLM(nn.Module):
 
 
 def trainer():
-    vocab_size = 6400
-    hidden_size = 256
-    num_layers = 2
-    num_heads = 4
-    max_seq_len = 128
+    config = DIYCofig()
     batch_size, seq_len = 2, 10
 
     torch.manual_seed(42)
-    model = DIYForCausalLM(vocab_size, num_layers, hidden_size, num_heads, max_seq_len, dropout=0.1)
+    model = DIYForCausalLM(config)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
 
 
-    input_ids = torch.randint(0, vocab_size, (batch_size, seq_len))
+    input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
 
     # 一次前向（forward 内部会 backward，这里先 zero_grad）
     model.train()
@@ -105,7 +148,7 @@ def trainer():
         optimizer.zero_grad()
         logits = model(input_ids)
 
-        logits_slice = logits[:, :-1, :].reshape(-1, vocab_size)
+        logits_slice = logits[:, :-1, :].reshape(-1, config.vocab_size)
         labels_slice = input_ids[:, 1:].reshape(-1)
 
         loss = F.cross_entropy(logits_slice, labels_slice)
@@ -114,16 +157,35 @@ def trainer():
 
         print(f"step {step + 1}, loss = {loss.item():.4f}")
 
+    checkpoint = {
+        "config": config.__dict__,
+        "state_dict": model.state_dict()
+    }
+    torch.save(checkpoint, "diy_checkpoint.pth")
+
+    checkpoint = torch.load("diy_checkpoint.pth")
+    config = DIYCofig(**checkpoint["config"])
+    model2 = DIYForCausalLM(config)
+    model2.load_state_dict(checkpoint["state_dict"])
+
+    for step in range(5, 10):
+        optimizer.zero_grad()
+        logits = model(input_ids)
+
+        logits_slice = logits[:, :-1, :].reshape(-1, config.vocab_size)
+        labels_slice = input_ids[:, 1:].reshape(-1)
+
+        loss = F.cross_entropy(logits_slice, labels_slice)
+        loss.backward()
+        optimizer.step()
+
+        print(f"step {step + 1}, loss = {loss.item():.4f}")
 
 def infer():
-    vocab_size = 6400
-    hidden_size = 256
-    num_layers = 2
-    num_heads = 4
-    max_seq_len = 128
+    config = DIYCofig()
 
     torch.manual_seed(42)
-    model = DIYForCausalLM(vocab_size, num_layers, hidden_size, num_heads, max_seq_len, dropout=0.1)
+    model = DIYForCausalLM(config)
     model.eval()
     prompt = torch.tensor([[1, 42, 7, 0, 15]], dtype=torch.long)  # (1, 5)
     num_generate = 10
@@ -155,4 +217,4 @@ def infer():
 
 
 if __name__ == "__main__":
-    infer()
+    trainer()

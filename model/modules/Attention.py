@@ -3,6 +3,8 @@ import torch
 from sympy import tensor
 from torch import nn
 import torch.nn.functional as F
+from typing import Optional, Tuple, Dict
+from model.modules.modelconfig import DIYCofig
 
 
 class BaseAttention(nn.Module):
@@ -438,22 +440,45 @@ TODO(P2,FlashAttention / AMP 准备):
 - 减少不必要的 transpose / permute 操作
 """
 class FlashAttentionFusedAttention(nn.Module):
-    def __init__(self, hidden_size: int, num_heads: int, max_seq_len: int, dropout: int):
+    """Fused QKV Attention，支持训练模式和 KV cache 增量解码。"""
+    
+    def __init__(self, config: DIYCofig):
         super().__init__()
 
-        assert hidden_size % num_heads == 0
-        self.hidden_size = hidden_size
-        self.num_heads = num_heads
-        self.head_dim = hidden_size // num_heads
-        self.max_seq_len = max_seq_len
+        assert config.hidden_size % config.num_heads == 0
+        self.hidden_size = config.hidden_size
+        self.num_heads = config.num_heads
+        self.head_dim = config.hidden_size // config.num_heads
+        self.max_seq_len = config.max_seq_len
+        self.dropout = config.dropout
 
         # fused QKV
-        self.qkv_proj = nn.Linear(hidden_size, 3 * hidden_size, bias=False)
-        self.o_proj = nn.Linear(hidden_size, hidden_size, bias=False)
-        self.dropout = dropout if dropout else 0.0
+        self.qkv_proj = nn.Linear(self.hidden_size, 3 * self.hidden_size, bias=False)
+        self.o_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
         self.resid_dropout = nn.Dropout(self.dropout)
 
-    def forward(self, x, seq_lengths=None, cached=None, cached_pos=None):
+    def forward(
+        self,
+        x: torch.Tensor,
+        seq_lengths: Optional[torch.Tensor] = None,
+        cached: Optional[Dict[str, torch.Tensor]] = None,
+        cached_pos: Optional[int] = None
+    ) -> Tuple[torch.Tensor, Optional[Dict[str, torch.Tensor]], Optional[int]]:
+        """
+        前向传播，支持训练和推理两种模式。
+        
+        Args:
+            x: Input tensor，shape (batch_size, seq_len, hidden_size)
+            seq_lengths: 每个样本的有效长度，shape (batch_size,)，用于 padding mask
+            cached: KV cache dict，包含 "k" 和 "v"，用于增量解码
+            cached_pos: Cache 位置，表示当前缓存到第几个位置
+        
+        Returns:
+            (att_output, cached, cached_pos)
+            - att_output: Attention 输出，shape (batch_size, seq_len, hidden_size)
+            - cached: 更新后的 KV cache（推理时），训练时为 None
+            - cached_pos: 更新后的 cache 位置（推理时），训练时为 None
+        """
         batch_size, seq_len, _ = x.shape
 
         # fused QKV

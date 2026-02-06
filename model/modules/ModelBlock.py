@@ -3,33 +3,41 @@ from torch import nn
 from model.modules.Attention import FlashAttentionFusedAttention
 from model.modules.RMSNorm import RMSNorm
 from model.modules.FeedForward import GatedFeedForward
+from model.modules.modelconfig import DIYCofig
 
 
 class ModelBlock(nn.Module):
-    def __init__(self, hidden_size: int, num_heads: int, max_seq_len: int, dropout: float = 0.0):
+    def __init__(self, config: DIYCofig):
         super().__init__()
-        self.hidden_size = hidden_size
-        self.num_heads = num_heads
-        self.max_seq_len = max_seq_len
-        self.dropout = dropout
+        self.hidden_size = config.hidden_size
+        self.num_heads = config.num_heads
+        self.max_seq_len = config.max_seq_len
+        self.dropout = config.dropout
 
-        self.attention = FlashAttentionFusedAttention(self.hidden_size, self.num_heads, self.max_seq_len, self.dropout)
-        self.attention_norm = RMSNorm(self.hidden_size)
-        self.feedforward_norm = RMSNorm(self.hidden_size)
-        self.feedforward = GatedFeedForward(self.hidden_size, 4*self.hidden_size, self.dropout)
+        self.attention = FlashAttentionFusedAttention(config)
+        self.attention_norm = RMSNorm(config)
+        self.feedforward_norm = RMSNorm(config)
+        self.feedforward = GatedFeedForward(config)
 
-    def forward(self, x, seq_lengths=None, cached=None, cached_pos=None):
+    def forward(
+        self,
+        x: torch.Tensor,
+        seq_lengths: Optional[torch.Tensor] = None,
+        cached: Optional[Dict[str, torch.Tensor]] = None,
+        cached_pos: Optional[int] = None
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor], int]]:
         """
+        前向传播。
+        
         Args:
-            x: Input tensor of shape [batch_size, seq_len, hidden_size]
-            seq_lengths: Optional sequence lengths for padding mask
-            cached: Optional KV cache dict for inference
-            cached_pos: Optional cache position for inference
-            is_training: Whether in training mode
+            x: Input tensor，shape (batch_size, seq_len, hidden_size)
+            seq_lengths: 每个样本的有效长度，shape (batch_size,)，用于 padding mask
+            cached: KV cache dict，包含 "k" 和 "v"，用于增量解码
+            cached_pos: Cache 位置，表示当前缓存到第几个位置
         
         Returns:
-            If is_training=True: x (output tensor)
-            If is_training=False: (x, cached, cached_pos) tuple for incremental decoding
+            训练时返回 x，shape (batch_size, seq_len, hidden_size)
+            推理时返回 (x, cached, cached_pos) tuple
         """
         # Pre-norm attention
         residual = x

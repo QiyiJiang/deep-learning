@@ -9,6 +9,7 @@
 ## 第一步：从 hidden_states 到 logits——加上语言模型头
 
 **目标**：当前模型只输出「表示」；要能做语言模型训练和生成，需要得到词表上的分数（logits）。
+**详细学习计划**：见 [DIYModel_Step1_学习计划.md](DIYModel_Step1_学习计划.md)。
 
 - [ ] **1.1 加 lm_head**  
   在单独脚本里先试：`lm_head = nn.Linear(hidden_size, vocab_size, bias=False)`，对 `DIYModel` 的 `hidden_states` 做一次线性变换得到 `logits`，shape 应为 `(batch, seq_len, vocab_size)`。  
@@ -64,7 +65,8 @@
 
 ## 第四步：配置与保存——方便复现
 
-**目标**：超参集中管理，能保存/加载权重（和配置），便于复现和继续改。
+**目标**：超参集中管理，能保存/加载权重（和配置），便于复现和继续改。  
+**详细学习计划**：见 [DIYModel_Step4_学习计划.md](DIYModel_Step4_学习计划.md)。
 
 - [ ] **4.1 引入简单 Config**  
   用 dataclass 或普通类存 `vocab_size, num_layers, hidden_size, num_heads, max_seq_len, dropout` 等。`DIYModel` 和 `DIYForCausalLM` 的 `__init__` 改为接收一个 `config`，从 `config.xxx` 读参数。  
@@ -82,7 +84,8 @@
 
 ## 第五步：完善接口与细节（按需选做）
 
-**目标**：让模型更完整、更易用、更易维护。
+**目标**：让模型更完整、更易用、更易维护。  
+**详细学习计划**：见 [DIYModel_Step5_学习计划.md](DIYModel_Step5_学习计划.md)。
 
 - [ ] **5.1 支持 attention_mask**  
   若希望和「按 mask 算有效长度」的用法一致：在封装层（如 `DIYForCausalLM`）接收 `attention_mask`，从中得到 `seq_lengths = attention_mask.sum(dim=1)`，再传给 `DIYModel`。底层仍用现有 `seq_lengths` 做 padding mask，不改 `ModelBlock` 接口。  
