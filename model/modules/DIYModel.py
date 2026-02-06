@@ -171,12 +171,16 @@ def trainer():
     config = DIYCofig()
     batch_size, seq_len = 2, 10
 
+    # 设置设备
+    device = config.device
+    print(f"Using device: {device}")
+
     torch.manual_seed(42)
     model = DIYForCausalLM(config)
+    model = model.to(device)  # 移动到 GPU
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
 
-
-    input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
+    input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len), device=device)
 
     # 一次前向（forward 内部会 backward，这里先 zero_grad）
     model.train()
@@ -200,14 +204,15 @@ def trainer():
     }
     torch.save(checkpoint, "diy_checkpoint.pth")
 
-    checkpoint = torch.load("diy_checkpoint.pth")
+    checkpoint = torch.load("diy_checkpoint.pth", map_location=device)
     config = DIYCofig(**checkpoint["config"])
     model2 = DIYForCausalLM(config)
+    model2 = model2.to(device)  # 移动到 GPU
     model2.load_state_dict(checkpoint["state_dict"])
 
     for step in range(5, 10):
         optimizer.zero_grad()
-        logits = model(input_ids)
+        logits = model2(input_ids)  # 使用 model2
 
         logits_slice = logits[:, :-1, :].reshape(-1, config.vocab_size)
         labels_slice = input_ids[:, 1:].reshape(-1)
@@ -221,10 +226,15 @@ def trainer():
 def infer():
     config = DIYCofig()
 
+    # 设置设备
+    device = config.device
+    print(f"Using device: {device}")
+
     torch.manual_seed(42)
     model = DIYForCausalLM(config)
+    model = model.to(device)  # 移动到 GPU
     model.eval()
-    prompt = torch.tensor([[1, 42, 7, 0, 15]], dtype=torch.long)  # (1, 5)
+    prompt = torch.tensor([[1, 42, 7, 0, 15]], dtype=torch.long, device=device)  # (1, 5)
     num_generate = 10
 
     print("=== 无 cache 生成（每次整段 forward）===")
@@ -252,6 +262,28 @@ def infer():
         generated = torch.cat([generated, next_token.unsqueeze(1)], dim=1)
         print(f"step {step + 1}, generated token: {next_token.item()}")
 
+
+def count_parameters():
+    config = DIYCofig()
+    device = config.device
+    print(f"Using device: {device}")
+    
+    model = DIYForCausalLM(config)
+    model = model.to(device)  # 移动到 GPU（虽然计算参数量不需要，但保持一致性）
+    
+    total = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Total parameters: {total / 1e6:.2f}M")
+    print(f"Trainable parameters: {trainable / 1e6:.2f}M")
+    
+    # 估算显存占用
+    if torch.cuda.is_available():
+        memory_fp32 = total * 4 / 1024**3  # GB
+        memory_fp16 = total * 2 / 1024**3  # GB
+        print(f"\n显存占用估算（仅参数）：")
+        print(f"  FP32: {memory_fp32:.2f} GB")
+        print(f"  FP16: {memory_fp16:.2f} GB")
+        print(f"  训练时（FP32 + 梯度 + 优化器）：约 {memory_fp32 * 3:.2f} GB")
 
 if __name__ == "__main__":
     trainer()
