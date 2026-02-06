@@ -1,8 +1,10 @@
+from cProfile import label
+from math import log
 import torch
 from torch import nn
+import torch.nn.functional as F
 from model.modules.RMSNorm import RMSNorm
 from model.modules.ModelBlock import ModelBlock
-
 
 class DIYModel(nn.Module):
     def __init__(self, vocab_size: int, num_layers: int, hidden_size: int, 
@@ -53,3 +55,59 @@ class DIYModel(nn.Module):
             return hidden_states
         else:
             return (hidden_states, presents) if use_cache else hidden_states
+
+
+class DIYForCausalLM(nn.Module):
+    def __init__(self, vocab_size: int, num_layers: int, hidden_size: int, 
+                 num_heads: int, max_seq_len: int, dropout: float = 0.1):
+        super().__init__()
+        
+        self.vocab_size = vocab_size
+        self.model = DIYModel(vocab_size, num_layers, hidden_size, num_heads, max_seq_len, dropout)
+        self.lm_head = nn.Linear(hidden_size, vocab_size, bias=False)
+
+    def forward(self, input_ids):
+
+        out = self.model(input_ids)
+
+        if isinstance(out, tuple):
+            hidden_states, presents = out
+        else:
+            hidden_states, presents = out, None
+
+        logits = self.lm_head(hidden_states)
+
+        if presents is not None:
+            return logits, presents
+        else:
+            return logits
+
+
+if __name__ == "__main__":
+    # 简单测试：前向 + 看 logits / loss，再跑几步看 loss 是否下降
+    vocab_size = 6400
+    hidden_size = 256
+    num_layers = 2
+    num_heads = 4
+    max_seq_len = 128
+    batch_size, seq_len = 2, 10
+
+    torch.manual_seed(42)
+    model = DIYForCausalLM(vocab_size, num_layers, hidden_size, num_heads, max_seq_len, dropout=0.1)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+
+
+    input_ids = torch.randint(0, vocab_size, (batch_size, seq_len))
+
+    # 一次前向（forward 内部会 backward，这里先 zero_grad）
+    model.train()
+    optimizer.zero_grad()
+    loss = model(input_ids)
+    print(f"logits.shape = {input_ids.shape}, loss = {loss.item():.4f}")
+
+    # 对同一批数据跑几步，看 loss 是否下降
+    for step in range(5):
+        optimizer.zero_grad()
+        loss = model(input_ids)
+        optimizer.step()
+        print(f"step {step + 1}, loss = {loss.item():.4f}")
