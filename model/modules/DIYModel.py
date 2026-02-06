@@ -21,7 +21,8 @@ class DIYModel(nn.Module):
         ])
         self.norm = RMSNorm(hidden_size)
 
-    def forward(self, input_ids, seq_lengths=None, past_key_values=None, use_cache=False, is_training=True):
+    def forward(self, input_ids, seq_lengths=None, past_key_values=None, use_cache=False):
+        
         batch_size, seq_len = input_ids.shape
         if past_key_values is None:
             past_key_values = [None] * self.num_layers
@@ -31,12 +32,12 @@ class DIYModel(nn.Module):
         hidden_states = self.dropout(self.embed_tokens(input_ids))
         
         # 只在需要时构建 presents 列表
-        presents = [] if (not is_training and use_cache) else None
+        presents = [] if (not self.training and use_cache) else None
 
         for layer_idx, (layer, past_kv) in enumerate(zip(self.layers, past_key_values)):
-            if is_training:
+            if self.training:
                 hidden_states = layer(
-                    hidden_states, seq_lengths=seq_lengths, cached=None, cached_pos=None, is_training=True
+                    hidden_states, seq_lengths=seq_lengths, cached=None, cached_pos=None
                 )
             else:
                 hidden_states, cached, cached_pos = layer(
@@ -44,14 +45,13 @@ class DIYModel(nn.Module):
                     seq_lengths=seq_lengths, 
                     cached=past_kv[0] if past_kv else None,
                     cached_pos=past_kv[1] if past_kv else None, 
-                    is_training=False
                 )
                 if use_cache:
                     presents.append((cached, cached_pos))
 
         hidden_states = self.norm(hidden_states)
 
-        if is_training:
+        if self.training:
             return hidden_states
         else:
             return (hidden_states, presents) if use_cache else hidden_states
@@ -66,9 +66,9 @@ class DIYForCausalLM(nn.Module):
         self.model = DIYModel(vocab_size, num_layers, hidden_size, num_heads, max_seq_len, dropout)
         self.lm_head = nn.Linear(hidden_size, vocab_size, bias=False)
 
-    def forward(self, input_ids):
-
-        out = self.model(input_ids)
+    def forward(self, input_ids, seq_lengths=None, past_key_values=None, use_cache=False):
+        out = self.model(input_ids, seq_lengths=seq_lengths, past_key_values=past_key_values, 
+                         use_cache=use_cache)
 
         if isinstance(out, tuple):
             hidden_states, presents = out
@@ -83,8 +83,7 @@ class DIYForCausalLM(nn.Module):
             return logits
 
 
-if __name__ == "__main__":
-    # 简单测试：前向 + 看 logits / loss，再跑几步看 loss 是否下降
+def trainer():
     vocab_size = 6400
     hidden_size = 256
     num_layers = 2
@@ -101,13 +100,59 @@ if __name__ == "__main__":
 
     # 一次前向（forward 内部会 backward，这里先 zero_grad）
     model.train()
-    optimizer.zero_grad()
-    loss = model(input_ids)
-    print(f"logits.shape = {input_ids.shape}, loss = {loss.item():.4f}")
 
-    # 对同一批数据跑几步，看 loss 是否下降
     for step in range(5):
         optimizer.zero_grad()
-        loss = model(input_ids)
+        logits = model(input_ids)
+
+        logits_slice = logits[:, :-1, :].reshape(-1, vocab_size)
+        labels_slice = input_ids[:, 1:].reshape(-1)
+
+        loss = F.cross_entropy(logits_slice, labels_slice)
+        loss.backward()
         optimizer.step()
+
         print(f"step {step + 1}, loss = {loss.item():.4f}")
+
+
+def infer():
+    vocab_size = 6400
+    hidden_size = 256
+    num_layers = 2
+    num_heads = 4
+    max_seq_len = 128
+
+    torch.manual_seed(42)
+    model = DIYForCausalLM(vocab_size, num_layers, hidden_size, num_heads, max_seq_len, dropout=0.1)
+    model.eval()
+    prompt = torch.tensor([[1, 42, 7, 0, 15]], dtype=torch.long)  # (1, 5)
+    num_generate = 10
+
+    print("=== 无 cache 生成（每次整段 forward）===")
+    generated = prompt.clone()
+    for step in range(num_generate):
+        logits = model(generated)    # 每次都是整段
+        next_logits = logits[:, -1, :]  # (1, V)
+        next_token = next_logits.argmax(dim=-1)  # (1,)
+        generated = torch.cat([generated, next_token.unsqueeze(1)], dim=1)
+        print(f"step {step}, generated token: {next_token.item()}")
+
+    print("\n=== 有 cache 生成（增量解码）===")
+    generated = prompt.clone()
+    # 第一次：整段 prompt
+    logits, presents = model(prompt, use_cache=True)
+    next_token = logits[:, -1, :].argmax(dim=-1)
+    generated = torch.cat([generated, next_token.unsqueeze(1)], dim=1)
+    print(f"step 0, generated token: {next_token.item()}")
+    
+    # 后续每步：只送 1 个 token
+    for step in range(num_generate - 1):
+        new_token = next_token.unsqueeze(1) # (1, 1)
+        logits, presents = model(new_token, past_key_values=presents, use_cache=True)
+        next_token = logits[:, -1, :].argmax(dim=-1)
+        generated = torch.cat([generated, next_token.unsqueeze(1)], dim=1)
+        print(f"step {step + 1}, generated token: {next_token.item()}")
+
+
+if __name__ == "__main__":
+    infer()

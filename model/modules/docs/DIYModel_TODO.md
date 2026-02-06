@@ -26,7 +26,8 @@
 
 ## 第二步：最小训练循环——验证「能学」
 
-**目标**：确认加上 lm_head 后，整条链路能训练、能收敛。
+**目标**：确认加上 lm_head 后，整条链路能训练、能收敛。  
+**详细学习计划**：见 [DIYModel_Step2_学习计划.md](DIYModel_Step2_学习计划.md)。
 
 - [ ] **2.1 准备玩具数据**  
   固定一小段 token 序列（如 20 个），复制成多份做成小 batch，或直接 `input_ids` + `labels` 的 tensor。  
@@ -44,7 +45,8 @@
 
 ## 第三步：自回归生成与 KV cache 的正确用法
 
-**目标**：会用现有 `past_key_values` / `presents` 做增量解码，并统一用 `model.train()` / `model.eval()` 控制分支。
+**目标**：会用现有 `past_key_values` / `presents` 做增量解码，并统一用 `model.train()` / `model.eval()` 控制分支。  
+**详细学习计划**：见 [DIYModel_Step3_学习计划.md](DIYModel_Step3_学习计划.md)。
 
 - [ ] **3.1 先实现「无 cache」的逐 token 生成**  
   循环：每次只预测下一个 token（取 logits 最后一维 argmax 或采样），拼到序列后，整段再送进 model。理解这样每步都重算整段 attention，复杂度随步数平方增长。  

@@ -453,7 +453,7 @@ class FlashAttentionFusedAttention(nn.Module):
         self.dropout = dropout if dropout else 0.0
         self.resid_dropout = nn.Dropout(self.dropout)
 
-    def forward(self, x, seq_lengths=None, cached=None, cached_pos=None, is_training=False):
+    def forward(self, x, seq_lengths=None, cached=None, cached_pos=None):
         batch_size, seq_len, _ = x.shape
 
         # fused QKV
@@ -465,7 +465,7 @@ class FlashAttentionFusedAttention(nn.Module):
         k = k.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
         v = v.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
 
-        if is_training:
+        if self.training:
             # 训练模式：构造 causal + padding mask
             total_len = k.size(2)
             attn_mask = torch.triu(torch.ones(seq_len, total_len, device=x.device, dtype=torch.bool), diagonal=1)
@@ -476,8 +476,6 @@ class FlashAttentionFusedAttention(nn.Module):
                 padding_mask = padding_mask[:, None, None, :]  # [B,1,1,L]
                 attn_mask = attn_mask | padding_mask
         else:
-            # 推理模式：seq_len=1, 使用 KV cache
-            assert seq_len == 1
             if cached is None:
                 cached = {
                     "k": torch.zeros(batch_size, self.num_heads, self.max_seq_len, self.head_dim,
@@ -485,24 +483,35 @@ class FlashAttentionFusedAttention(nn.Module):
                     "v": torch.zeros(batch_size, self.num_heads, self.max_seq_len, self.head_dim,
                                      device=x.device, dtype=x.dtype),
                 }
-                cached_pos = 0
+                if seq_len > 1:
+                    cached["k"][:, :, :seq_len, :] = k
+                    cached["v"][:, :, :seq_len, :] = v
+                    cached_pos = seq_len
+                else:
+                    cached["k"][:, :, cached_pos, :] = k[:, :, 0, :]
+                    cached["v"][:, :, cached_pos, :] = v[:, :, 0, :]
+                    cached_pos = 1
+                    k = cached["k"][:, :, :cached_pos + 1, :]
+                    v = cached["v"][:, :, :cached_pos + 1, :]
+            else:
+                assert seq_len == 1
+                cached["k"][:, :, cached_pos, :] = k[:, :, 0, :]
+                cached["v"][:, :, cached_pos, :] = v[:, :, 0, :]
+                cached_pos = cached_pos + 1
+                k = cached["k"][:, :, :cached_pos + 1, :]
+                v = cached["v"][:, :, :cached_pos + 1, :]
 
-            # 更新缓存
-            cached["k"][:, :, cached_pos, :] = k[:, :, 0, :]
-            cached["v"][:, :, cached_pos, :] = v[:, :, 0, :]
-            k = cached["k"][:, :, :cached_pos + 1, :]
-            v = cached["v"][:, :, :cached_pos + 1, :]
-            attn_mask = None  # 单 token 自然满足 causal
+            attn_mask = None
 
         # scaled dot product attention
-        att = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, is_causal=False, dropout_p=self.dropout if is_training else 0.0)
+        att = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, is_causal=False, dropout_p=self.dropout if self.training else 0.0)
 
         # 输出 reshape [B,H,L,D] -> [B,L,H*D]
         att = att.transpose(1, 2).contiguous().reshape(batch_size, seq_len, self.num_heads * self.head_dim)
         att = self.o_proj(att)
         att = self.resid_dropout(att)
 
-        return att, cached, cached_pos + 1 if not is_training else None
+        return att, cached, cached_pos if not self.training else None
 
 
 if __name__ == "__main__":
