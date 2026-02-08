@@ -3,12 +3,15 @@ from math import log
 import torch
 from torch import nn
 import torch.nn.functional as F
-from torch.utils import checkpoint
 from typing import Optional, Tuple, List, Dict, Union
 from model.modules.RMSNorm import RMSNorm
 from model.modules.ModelBlock import ModelBlock
 from model.modules.modelconfig import DIYCofig
 from model.modules.step_rope import precompute_freqs_cis
+from model.modules.datasets_processing import PretrainDataset
+from transformers import AutoTokenizer
+from torch.utils.data import Dataset, DataLoader
+
 
 class DIYModel(nn.Module):
     """DIY 模型主干：embed → ModelBlock × N → RMSNorm，输出 hidden_states。"""
@@ -222,6 +225,53 @@ def trainer():
         optimizer.step()
 
         print(f"step {step + 1}, loss = {loss.item():.4f}")
+
+
+def pre_trainer():
+    config = DIYCofig()
+    batch_size, seq_len = 2, 10
+
+    # 设置设备
+    device = config.device
+    print(f"Using device: {device}")
+
+    torch.manual_seed(42)
+    model = DIYForCausalLM(config)
+    model = model.to(device)  # 移动到 GPU
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+
+    input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len), device=device)
+
+    # 一次前向（forward 内部会 backward，这里先 zero_grad）
+    model.train()
+
+    tokenizer = AutoTokenizer.from_pretrained("model/modules")
+    dataset = PretrainDataset("dataset/pretrain_hq_15.jsonl", tokenizer)
+    loader = DataLoader(dataset, batch_size=1, num_workers=0)
+
+    for batch in loader:
+        optimizer.zero_grad()
+
+        input_ids, labels, loss_mask = batch
+        input_ids = input_ids.to(device)
+        labels = labels.to(device)
+        loss_mask = loss_mask.to(device)
+        logits = model(input_ids)
+        logits_slice = logits[:, :-1, :].reshape(-1, config.vocab_size)
+        labels_slice = labels[:, 1:].reshape(-1)
+
+        loss = F.cross_entropy(logits_slice, labels_slice)
+        loss.backward()
+        optimizer.step()
+
+        print(f"loss = {loss.item():.4f}")
+
+    checkpoint = {
+        "config": config.__dict__,
+        "state_dict": model.state_dict()
+    }
+    torch.save(checkpoint, "diy_checkpoint.pth")
+
 
 def infer():
     config = DIYCofig()
