@@ -27,7 +27,7 @@ class DIYModel(nn.Module):
         freqs_cos, freqs_sin = precompute_freqs_cis(
             dim=head_dim,
             end=config.max_seq_len,
-            rope_base=1e6
+            rope_base=config.rope_base,
         )
         self.register_buffer('freqs_cos', freqs_cos, persistent=False)
         self.register_buffer('freqs_sin', freqs_sin, persistent=False)

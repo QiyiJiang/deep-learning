@@ -12,14 +12,15 @@ TOKENIZER_DIR = Path(llm_study.__file__).resolve().parent
 
 def main():
     config = DIYConfig()
-    batch_size, seq_len = 2, 10
+    batch_size = config.default_demo_batch_size
+    seq_len = config.default_demo_seq_len
     device = config.device
     print(f"Using device: {device}")
 
     torch.manual_seed(42)
     model = DIYForCausalLM(config)
     model = model.to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config.default_lr)
     input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len), device=device)
     model.train()
 

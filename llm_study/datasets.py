@@ -1,6 +1,16 @@
 import json
 import torch
+from typing import Optional
 from torch.utils.data import Dataset, IterableDataset, get_worker_info
+
+from .config import DIYConfig
+
+
+def _default_max_length(max_length: Optional[int]) -> int:
+    """未传 max_length 时使用 DIYConfig.train_max_length。"""
+    if max_length is not None:
+        return max_length
+    return DIYConfig().train_max_length
 
 def _build_loss_mask(input_ids, tokenizer):
     bos_id = tokenizer(
@@ -39,9 +49,9 @@ def _build_loss_mask(input_ids, tokenizer):
     return torch.tensor(loss_mask, dtype=torch.long, device=input_ids.device)
 
 class SimplePretrainDataset(Dataset):
-    def __init__(self, file_path, tokenizer, max_length=512):
+    def __init__(self, file_path, tokenizer, max_length: Optional[int] = None):
         self.tokenizer = tokenizer
-        self.max_length = max_length
+        self.max_length = _default_max_length(max_length)
         self.samples = []
         with open(file_path, "r", encoding="utf-8") as f:
             for line in f:
@@ -69,11 +79,11 @@ class SimplePretrainDataset(Dataset):
 class PretrainDataset(IterableDataset):
     """流式预训练数据集。num_workers>0 时自动按行分片；建议传 tokenizer_path 避免多进程 tokenizer 问题。"""
 
-    def __init__(self, file_path, tokenizer=None, tokenizer_path=None, max_length=512):
+    def __init__(self, file_path, tokenizer=None, tokenizer_path=None, max_length: Optional[int] = None):
         assert tokenizer is not None or tokenizer_path is not None, "传 tokenizer 或 tokenizer_path 之一"
         self.tokenizer = tokenizer
         self.tokenizer_path = tokenizer_path
-        self.max_length = max_length
+        self.max_length = _default_max_length(max_length)
         self.file_path = file_path
 
     def _get_tokenizer(self):
@@ -111,9 +121,9 @@ class PretrainDataset(IterableDataset):
 
 
 class SimpleSFTDataset(Dataset):
-    def __init__(self, file_path, tokenizer, max_length=512):
+    def __init__(self, file_path, tokenizer, max_length: Optional[int] = None):
         self.tokenizer = tokenizer
-        self.max_length = max_length
+        self.max_length = _default_max_length(max_length)
         self.samples = []
         with open(file_path, "r", encoding="utf-8") as f:
             for line in f:
@@ -149,11 +159,11 @@ class SimpleSFTDataset(Dataset):
 class SFTDataset(IterableDataset):
     """流式 SFT 数据集。num_workers>0 时自动按行分片；建议传 tokenizer_path 避免多进程 tokenizer 问题。"""
 
-    def __init__(self, file_path, tokenizer=None, tokenizer_path=None, max_length=512):
+    def __init__(self, file_path, tokenizer=None, tokenizer_path=None, max_length: Optional[int] = None):
         assert tokenizer is not None or tokenizer_path is not None, "传 tokenizer 或 tokenizer_path 之一"
         self.tokenizer = tokenizer
         self.tokenizer_path = tokenizer_path
-        self.max_length = max_length
+        self.max_length = _default_max_length(max_length)
         self.file_path = file_path
 
     def _get_tokenizer(self):
