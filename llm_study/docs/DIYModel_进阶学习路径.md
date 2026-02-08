@@ -314,7 +314,7 @@ print(f"Trainable parameters: {trainable_params:.2f}M")
    - **示例配置**：
      ```python
      # 配置 1：hidden_size=768, num_layers=12
-     config = DIYCofig(
+     config = DIYConfig(
          vocab_size=6400,
          hidden_size=768,
          num_layers=12,
@@ -327,7 +327,7 @@ print(f"Trainable parameters: {trainable_params:.2f}M")
      # 预计参数量：约 400-500M
      
      # 配置 2：hidden_size=1024, num_layers=8
-     config = DIYCofig(
+     config = DIYConfig(
          vocab_size=6400,
          hidden_size=1024,
          num_layers=8,
@@ -342,7 +342,7 @@ print(f"Trainable parameters: {trainable_params:.2f}M")
 
 3. **调整模型配置**  
    - **步骤**：
-     1. 修改 `DIYCofig` 的默认值，或创建新的配置实例
+     1. 修改 `DIYConfig` 的默认值，或创建新的配置实例
      2. 用新配置初始化模型：`model = DIYForCausalLM(new_config)`
      3. 验证参数量：`count_parameters(model)`
      4. 如果参数量不对，调整 `hidden_size` 或 `num_layers`
@@ -361,7 +361,7 @@ print(f"Trainable parameters: {trainable_params:.2f}M")
 
 ```python
 # 创建 0.5B 配置
-config_05b = DIYCofig(
+config_05b = DIYConfig(
     vocab_size=6400,
     hidden_size=768,
     num_layers=12,

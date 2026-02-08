@@ -1,10 +1,9 @@
 import math
 import torch
-from sympy import tensor
 from torch import nn
 import torch.nn.functional as F
 from typing import Optional, Tuple, Dict
-from model.modules.modelconfig import DIYCofig
+from .config import DIYConfig
 
 
 class BaseAttention(nn.Module):
@@ -442,7 +441,7 @@ TODO(P2,FlashAttention / AMP 准备):
 class FlashAttentionFusedAttention(nn.Module):
     """Fused QKV Attention，支持训练模式和 KV cache 增量解码。"""
     
-    def __init__(self, config: DIYCofig):
+    def __init__(self, config: DIYConfig):
         super().__init__()
 
         assert config.hidden_size % config.num_heads == 0
@@ -493,7 +492,7 @@ class FlashAttentionFusedAttention(nn.Module):
         v = v.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
         
         if freqs_cos is not None and freqs_sin is not None:
-            from model.modules.step_rope import apply_rotary_pos_emb
+            from .rope import apply_rotary_pos_emb
             q, k = apply_rotary_pos_emb(q, k, freqs_cos, freqs_sin)
 
         if self.training:

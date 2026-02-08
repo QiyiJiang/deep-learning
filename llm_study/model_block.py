@@ -1,14 +1,14 @@
 import torch
 from torch import nn
-from model.modules.Attention import FlashAttentionFusedAttention
-from model.modules.RMSNorm import RMSNorm
+from .attention import FlashAttentionFusedAttention
+from .rms_norm import RMSNorm
 from typing import Optional, Tuple, List, Dict, Union
-from model.modules.FeedForward import GatedFeedForward
-from model.modules.modelconfig import DIYCofig
+from .feed_forward import GatedFeedForward
+from .config import DIYConfig
 
 
 class ModelBlock(nn.Module):
-    def __init__(self, config: DIYCofig):
+    def __init__(self, config: DIYConfig):
         super().__init__()
         self.hidden_size = config.hidden_size
         self.num_heads = config.num_heads

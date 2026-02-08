@@ -35,11 +35,10 @@
 ```python
 # 导入必要的模块
 import torch
-from model.modules.DIYModel import DIYModel
-from model.modules.modelconfig import DIYCofig
+from llm_study import DIYModel, DIYConfig
 
 # 创建配置和模型
-config = DIYCofig(
+config = DIYConfig(
     vocab_size=6400,
     hidden_size=256,
     num_layers=2,

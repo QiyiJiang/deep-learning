@@ -54,10 +54,9 @@
 
 ```python
 # 查看当前模型的配置
-from model.modules.modelconfig import DIYCofig
-from model.modules.DIYModel import DIYForCausalLM
+from llm_study import DIYConfig, DIYForCausalLM
 
-config = DIYCofig()  # 使用默认配置
+config = DIYConfig()  # 使用默认配置
 print("当前配置：")
 print(f"  hidden_size: {config.hidden_size}")
 print(f"  num_layers: {config.num_layers}")
@@ -139,10 +138,9 @@ def count_parameters(model):
     return total / 1e6, trainable / 1e6
 
 # 使用
-from model.modules.DIYModel import DIYForCausalLM
-from model.modules.modelconfig import DIYCofig
+from llm_study import DIYForCausalLM, DIYConfig
 
-config = DIYCofig()
+config = DIYConfig()
 model = DIYForCausalLM(config)
 
 total_params, trainable_params = count_parameters(model)
@@ -216,7 +214,7 @@ print(f"差异: {abs(total_manual - total_params):.4f}M")
      - hidden_size=1024：每层约 16.8M，需要约 29 层才能达到 500M
    - **示例配置 1**（推荐，hidden_size=1024）：
      ```python
-     config_05b_v1 = DIYCofig(
+     config_05b_v1 = DIYConfig(
          vocab_size=6400,
          hidden_size=1024,
          num_layers=29,  # 约 493M
@@ -230,7 +228,7 @@ print(f"差异: {abs(total_manual - total_params):.4f}M")
      ```
    - **示例配置 2**（hidden_size=768，层数较多）：
      ```python
-     config_05b_v2 = DIYCofig(
+     config_05b_v2 = DIYConfig(
          vocab_size=6400,
          hidden_size=768,
          num_layers=24,  # 约 231M（如果显存有限可以用这个）
@@ -276,11 +274,10 @@ print(f"差异: {abs(total_manual - total_params):.4f}M")
 **可参考的代码片段（只作提示，请自己敲一遍）**：
 
 ```python
-from model.modules.DIYModel import DIYForCausalLM
-from model.modules.modelconfig import DIYCofig
+from llm_study import DIYForCausalLM, DIYConfig
 
 # 创建 0.5B 配置
-config_05b = DIYCofig(
+config_05b = DIYConfig(
     vocab_size=6400,
     hidden_size=768,
     num_layers=12,
@@ -446,7 +443,7 @@ def verify_model(model, config):
     print("✓ 反向传播正常")
 
 # 使用
-config_05b = DIYCofig(...)  # 你的 0.5B 配置
+config_05b = DIYConfig(...)  # 你的 0.5B 配置
 model = DIYForCausalLM(config_05b)
 verify_model(model, config_05b)
 ```

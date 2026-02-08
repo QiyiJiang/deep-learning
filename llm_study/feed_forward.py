@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 from typing import Optional
-from model.modules.modelconfig import DIYCofig
+from .config import DIYConfig
 
 class FeedForward(nn.Module):
     """标准 FeedForward 层：Linear → GELU → Dropout → Linear → Dropout。"""
@@ -36,7 +36,7 @@ class FeedForward(nn.Module):
 class GatedFeedForward(nn.Module):
     """Gated FeedForward 层：gate(x) * up(x) → down，使用 GELU 激活。"""
     
-    def __init__(self, config: DIYCofig):
+    def __init__(self, config: DIYConfig):
         super().__init__()
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size
@@ -62,4 +62,3 @@ class GatedFeedForward(nn.Module):
         gate = gate * self.linear_up(x)
         gate = self.linear_down(gate)
         return self.dropout(gate)
-

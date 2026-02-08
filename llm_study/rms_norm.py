@@ -1,11 +1,12 @@
 import torch
 from torch import nn
-from model.modules.modelconfig import DIYCofig
+from .config import DIYConfig
+
 
 class RMSNorm(nn.Module):
     """RMS Normalization：对最后一维做 RMS 归一化。"""
     
-    def __init__(self, config: DIYCofig) -> None:
+    def __init__(self, config: DIYConfig) -> None:
         super().__init__()
         self.eps = config.eps
         self.weight = nn.Parameter(torch.ones(config.hidden_size))
@@ -26,8 +27,10 @@ class RMSNorm(nn.Module):
         """
         return self.weight * self._norm(x)
 
+
 if __name__ == "__main__":
-    resnorm = RMSNorm(2)
-    x = torch.rand([1,2,2])
-    print(x)
-    print(resnorm(x))
+    config = DIYConfig()
+    rmsnorm = RMSNorm(config)
+    x = torch.rand([1, 2, config.hidden_size])
+    print(x.shape)
+    print(rmsnorm(x).shape)

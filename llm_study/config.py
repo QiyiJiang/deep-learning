@@ -3,7 +3,7 @@ import torch
 
 
 @dataclass
-class DIYCofig:
+class DIYConfig:
     """DIY 模型配置类，包含所有超参数。"""
     vocab_size: int = 6400
     hidden_size: int = 1024
