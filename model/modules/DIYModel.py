@@ -11,6 +11,8 @@ from model.modules.step_rope import precompute_freqs_cis
 from model.modules.datasets_load import PretrainDataset, SimpleSFTDataset
 from transformers import AutoTokenizer
 from torch.utils.data import Dataset, DataLoader
+from transformers import get_linear_schedule_with_warmup
+
 
 
 class DIYModel(nn.Module):
@@ -239,6 +241,14 @@ def pre_trainer():
     model = DIYForCausalLM(config)
     model = model.to(device)  # 移动到 GPU
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    
+    num_training_steps = 1400000
+    num_warmup_steps = int(num_training_steps * 0.05) 
+    scheduler = get_linear_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=num_warmup_steps,
+        num_training_steps=num_training_steps,
+    )
 
     input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len), device=device)
 
@@ -248,6 +258,9 @@ def pre_trainer():
     tokenizer = AutoTokenizer.from_pretrained("model/modules")
     dataset = PretrainDataset("dataset/pretrain_hq_15.jsonl", tokenizer)
     loader = DataLoader(dataset, batch_size=1, num_workers=0)
+    save_step = 2000
+    step = 0
+
 
     for batch in loader:
         optimizer.zero_grad()
@@ -262,15 +275,27 @@ def pre_trainer():
 
         loss = F.cross_entropy(logits_slice, labels_slice)
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
+        scheduler.step()
+        step += 1
 
-        print(f"loss = {loss.item():.4f}")
+        if step % save_step == 0:
+            checkpoint = {
+                "config": config.__dict__,
+                "state_dict": model.state_dict()
+            }
+            torch.save(checkpoint, f"diy_checkpoint_step_{step}.pth")
+
+    if step % 200 == 0 or step == 1:
+        lr = scheduler.get_last_lr()[0]
+        print(f"step {step} | loss = {loss.item():.4f} | lr = {lr:.2e}")
 
     checkpoint = {
         "config": config.__dict__,
         "state_dict": model.state_dict()
     }
-    torch.save(checkpoint, "diy_checkpoint.pth")
+    torch.save(checkpoint, "diy_checkpoint_last.pth")
 
 
 def sft_trainer():

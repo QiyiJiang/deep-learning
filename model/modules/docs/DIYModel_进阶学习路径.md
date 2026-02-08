@@ -26,8 +26,9 @@
   └─ 3.3 预训练 vs SFT 的区别与联系
 
 阶段四：模型优化与工程化
-  ├─ 4.1 推理优化（量化、KV Cache 优化）
-  └─ 4.2 工程化实践（Checkpoint、分布式训练、日志监控）
+  ├─ 4.0 大规模训练前的知识补充（建议先学）
+  ├─ 4.1 训练优化（Checkpoint、DDP、日志、梯度裁剪与 warmup）
+  └─ 4.2 部署与推理优化（量化、KV Cache、模型保存与加载）
 ```
 
 **建议顺序**：阶段一 → 阶段二 → 阶段三 → 阶段四，每个阶段内部按顺序学习。
@@ -712,134 +713,22 @@ for step, (input_ids, loss_mask) in enumerate(loader):
 
 **4. 下一步**
 
-- 理解了训练流程，可以进入 **阶段四**：模型优化与工程化（推理优化、工程化实践等）。
+- 理解了训练流程，可以进入 **阶段四**：模型优化与工程化。建议顺序：**先 4.0 大规模训练前的知识补充 → 4.1 训练优化 → 4.2 部署与推理优化**。详细内容见《DIYModel_进阶学习路径_阶段4.md》。
 
 ---
 
 ## 阶段四：模型优化与工程化
 
-**目标**：把模型优化成「真正可用」的状态：推理快速、易于部署、训练稳定。  
-**前提**：已完成阶段三（预训练和 SFT），有可用的模型和训练脚本。  
-**预计时间**：3-5 天
+**目标**：先做好**训练优化**（可恢复、稳定、可观测），再做**部署与推理优化**，使模型真正可工程化使用。  
+**前提**：已完成阶段三（预训练和 SFT），有小规模数据和训练脚本可跑。  
+**预计时间**：4–6 天
 
----
+**学习顺序**：  
+- **4.0 大规模训练前的知识补充**（建议先学）：checkpoint 与恢复、warmup、梯度裁剪、日志等，避免长训翻车。  
+- **4.1 训练优化**：Checkpoint 管理、DDP、日志监控、数据加载衔接、梯度累积与混合精度（可选）。  
+- **4.2 部署与推理优化**：模型保存与加载、量化、KV Cache、Batch 推理。
 
-### 4.1 推理优化
-
-**目的**：掌握推理优化的方法，让模型推理更快、更省显存。
-
-**建议顺序**：
-
-1. **量化（Quantization）**  
-   - **问题**：fp32 模型占用显存大，推理慢
-   - **解决**：把 fp32 权重转成 int8，减少显存和加速
-   - **方法**：
-     ```python
-     import torch.quantization
-     
-     # 动态量化
-     quantized_model = torch.quantization.quantize_dynamic(
-         model, {torch.nn.Linear}, dtype=torch.qint8
-     )
-     ```
-   - **效果**：模型大小减少约 4 倍，推理速度提升约 2-3 倍
-   - **注意**：量化可能有精度损失，需要验证生成质量
-
-2. **KV Cache 优化（你已经实现了）**  
-   - **原理**：缓存之前计算的 K/V，避免重复计算
-   - **你已经实现**：在 `DIYModel` 和 `Attention` 中实现了 KV Cache
-   - **效果**：增量解码时，每个 token 只需要计算一次 attention
-   - **进一步优化（可选）**：
-     - 量化 KV Cache（用 int8 存储）
-     - PagedAttention（分页管理 KV Cache）
-
-3. **Batch Inference**  
-   - **原理**：一次处理多个样本，提高 GPU 利用率
-   - **实现**：把多个样本 batch 在一起，一起推理
-   - **注意**：需要处理不同长度的序列（padding 或 dynamic batching）
-
-**学习时间**：约 1-2 天
-
----
-
-### 4.2 工程化实践
-
-**目的**：掌握工程化的实践方法，让模型训练和部署更稳定、更易管理。
-
-**建议顺序**：
-
-1. **Checkpoint 管理**  
-   - **作用**：保存训练状态（模型、优化器、步数等），支持恢复训练
-   - **实现**：
-     ```python
-     def save_checkpoint(model, optimizer, step, epoch, config, save_path):
-         checkpoint = {
-             'model_state_dict': model.state_dict(),
-             'optimizer_state_dict': optimizer.state_dict(),
-             'step': step,
-             'epoch': epoch,
-             'config': config.__dict__ if hasattr(config, '__dict__') else config,
-         }
-         torch.save(checkpoint, save_path)
-     
-     def load_checkpoint(model, optimizer, checkpoint_path, device='cuda'):
-         checkpoint = torch.load(checkpoint_path, map_location=device)
-         model.load_state_dict(checkpoint['model_state_dict'])
-         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-         return checkpoint.get('step', 0), checkpoint.get('epoch', 0)
-     ```
-
-2. **分布式训练（DDP）**  
-   - **问题**：单 GPU 训练慢，显存有限
-   - **解决**：多 GPU 并行训练
-   - **实现**：
-     ```python
-     import torch.distributed as dist
-     from torch.nn.parallel import DistributedDataParallel as DDP
-     
-     # 初始化进程组
-     dist.init_process_group(backend='nccl')
-     rank = dist.get_rank()
-     device = torch.device(f'cuda:{rank}')
-     
-     # 包装模型
-     model = model.to(device)
-     model = DDP(model, device_ids=[rank])
-     
-     # 数据加载
-     from torch.utils.data.distributed import DistributedSampler
-     sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank)
-     loader = DataLoader(dataset, batch_size=batch_size, sampler=sampler)
-     ```
-   - **启动**：`torchrun --nproc_per_node=2 train.py`
-
-3. **日志与监控**  
-   - **基础日志**：
-     ```python
-     import logging
-     logging.basicConfig(level=logging.INFO)
-     logging.info(f"Step {step}, Loss: {loss:.4f}")
-     ```
-   - **Wandb 监控（可选）**：
-     ```python
-     import wandb
-     wandb.init(project='diy-model')
-     wandb.log({'train_loss': loss.item(), 'step': step})
-     ```
-
-4. **数据加载优化**  
-   - **多进程 DataLoader**：
-     ```python
-     loader = DataLoader(
-         dataset,
-         batch_size=batch_size,
-         num_workers=4,
-         pin_memory=True,
-         prefetch_factor=2
-     )
-     ```
-
-**学习时间**：约 2-3 天（包括调试）
+详细小节说明、代码提示与自检见 **《DIYModel_进阶学习路径_阶段4.md》**。
 
 ---
 
@@ -847,23 +736,23 @@ for step, (input_ids, loss_mask) in enumerate(loader):
 
 做完上面所有小节后，你应该得到下面这些**统一结果**（方便自检是否达标）：
 
-**1. 推理优化**
+**1. 大规模训练前（4.0）**
 
-- 能实现量化（INT8），减少显存和加速推理。
-- 理解 KV Cache 的优化空间（你已经实现了基础版本）。
+- 理解并会使用 checkpoint 恢复、warmup、梯度裁剪、基础日志，为长训打基础。
 
-**2. 工程化实践**
+**2. 训练优化（4.1）**
 
-- 能实现 checkpoint 保存和加载，能恢复训练。
-- 能实现 DDP 训练，能在多 GPU 上训练。
-- 能实现日志和监控（wandb/tensorboard）。
-- 能优化数据加载，提高训练效率。
+- 能实现完整 checkpoint 管理（保存与恢复），能实现 DDP 多卡训练。
+- 能实现日志与监控；数据加载与阶段三流式/分片方案衔接良好。
 
-**3. 完整的工程化流程**
+**3. 部署与推理优化（4.2）**
 
-- 训练脚本包含所有工程化实践。
-- 推理脚本包含所有优化。
-- 模型训练更稳定、更易管理、更高效。
+- 能区分训练用 checkpoint 与推理用权重，并正确保存与加载。
+- 理解量化、KV Cache、batch 推理的作用，并能做简单推理优化。
+
+**4. 完整工程化**
+
+- 训练脚本具备可恢复、可观测、可扩展；推理侧具备基本优化与部署能力。
 
 **4. 总结**
 
@@ -886,8 +775,9 @@ for step, (input_ids, loss_mask) in enumerate(loader):
 | 一 | RoPE 原理与实现 | 2-3 天 | P0（基础） |
 | 二 | 模型规模调整到 0.5B | 1-2 天 | P0（核心） |
 | 三 | 预训练 vs SFT | 3-4 天 | P0（核心） |
-| 四 | 推理优化 | 1-2 天 | P1（重要） |
-| 四 | 工程化实践 | 2-3 天 | P1（重要） |
+| 四 | 大规模训练前补充（4.0） | 约 1 天 | P1（建议先学） |
+| 四 | 训练优化（4.1） | 约 2 天 | P1（重要） |
+| 四 | 部署与推理优化（4.2） | 1-2 天 | P1（重要） |
 
 **总预计时间**：约 2-3 周（按每天 2-3 小时计算）
 
