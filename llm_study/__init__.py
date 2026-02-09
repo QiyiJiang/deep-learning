@@ -9,6 +9,15 @@ from .datasets import (
     SFTDataset,
 )
 from .rope import precompute_freqs_cis, apply_rotary_pos_emb
+from .logger import (
+    get_logger,
+    setup_logger,
+    debug,
+    info,
+    warning,
+    error,
+    critical,
+)
 
 __all__ = [
     "DIYConfig",
@@ -20,4 +29,11 @@ __all__ = [
     "SFTDataset",
     "precompute_freqs_cis",
     "apply_rotary_pos_emb",
+    "get_logger",
+    "setup_logger",
+    "debug",
+    "info",
+    "warning",
+    "error",
+    "critical",
 ]
