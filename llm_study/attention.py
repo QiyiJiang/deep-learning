@@ -518,11 +518,13 @@ class FlashAttentionFusedAttention(nn.Module):
                     cached["v"][:, :, :seq_len, :] = v
                     cached_pos = seq_len
                 else:
+                    # 第一次 forward，seq_len=1，从位置 0 开始
+                    cached_pos = 0
                     cached["k"][:, :, cached_pos, :] = k[:, :, 0, :]
                     cached["v"][:, :, cached_pos, :] = v[:, :, 0, :]
-                    cached_pos = 1
-                    k = cached["k"][:, :, :cached_pos + 1, :]
-                    v = cached["v"][:, :, :cached_pos + 1, :]
+                    cached_pos = cached_pos + 1
+                    k = cached["k"][:, :, :cached_pos, :]
+                    v = cached["v"][:, :, :cached_pos, :]
             else:
                 assert seq_len == 1
                 cached["k"][:, :, cached_pos, :] = k[:, :, 0, :]

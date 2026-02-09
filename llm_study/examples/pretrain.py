@@ -50,6 +50,8 @@ def main():
     )
 
     tokenizer = AutoTokenizer.from_pretrained(str(TOKENIZER_DIR))
+    print(f"pad_token_id: {tokenizer.pad_token_id}")
+    print(f"pad_token: {tokenizer.pad_token}")
     dataset = PretrainDataset(args.data_path, tokenizer=tokenizer, max_length=config.train_max_length)
     loader = DataLoader(dataset, batch_size=batch_size, num_workers=0)
 
@@ -69,7 +71,7 @@ def main():
                 logits = model(input_ids)
                 logits_slice = logits[:, :-1, :].reshape(-1, config.vocab_size)
                 labels_slice = labels[:, 1:].reshape(-1)
-                loss = F.cross_entropy(logits_slice, labels_slice)
+                loss = F.cross_entropy(logits_slice, labels_slice, ignore_index=tokenizer.pad_token_id)
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -79,7 +81,7 @@ def main():
             logits = model(input_ids)
             logits_slice = logits[:, :-1, :].reshape(-1, config.vocab_size)
             labels_slice = labels[:, 1:].reshape(-1)
-            loss = F.cross_entropy(logits_slice, labels_slice)
+            loss = F.cross_entropy(logits_slice, labels_slice, ignore_index=tokenizer.pad_token_id)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
@@ -94,9 +96,10 @@ def main():
             }
             torch.save(checkpoint, f"{args.checkpoints_dir}/diy_checkpoint_step_{step}.pth")
 
-        if step % 200 == 0 or step == 1:
+        if step % 2000 == 0 or step == 1:
             lr = scheduler.get_last_lr()[0]
             print(f"step {step}/{num_training_steps} | loss = {loss.item():.4f} | lr = {lr:.2e}")
+            print(f"loss_mask sum: {loss_mask.sum().item()}, total: {loss_mask.numel()}")
 
     checkpoint = {
         "config": config.__dict__,

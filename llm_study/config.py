@@ -27,7 +27,7 @@ class DIYConfig:
     # 示例脚本默认训练配置（examples 中 argparse 未指定时使用）
     default_lr: float = 1e-4
     default_batch_size: int = 1
-    default_save_step: int = 2000
+    default_save_step: int = 100000
     default_pretrain_data_path: str = "dataset/pretrain_hq.jsonl"
     default_sft_data_path: str = "dataset/sft_mini_512_15.jsonl"
     default_checkpoints_dir: str = "checkpoints"
