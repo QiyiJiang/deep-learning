@@ -1,6 +1,7 @@
 """日志模块：提供统一的日志记录功能，支持从 .env 文件加载配置。"""
 import logging
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -96,8 +97,16 @@ def setup_logger(
     
     # 文件 handler（如果指定）
     if log_file:
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        # 在文件名中添加时间戳
+        log_file = Path(log_file)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # 分离文件名和扩展名，插入时间戳
+        stem = log_file.stem  # 文件名（不含扩展名）
+        suffix = log_file.suffix  # 扩展名（如 .log）
+        log_file_with_timestamp = log_file.parent / f"{stem}_{timestamp}{suffix}"
+        
+        log_file_with_timestamp.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(log_file_with_timestamp, encoding="utf-8")
         file_handler.setLevel(log_level)
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
