@@ -6,6 +6,15 @@ from typing import Optional, Tuple, Dict
 from .config import DIYConfig
 
 
+def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
+    """将KV头重复n_rep次以匹配Q头数量"""
+    bs, slen, num_key_value_heads, head_dim = x.shape
+    if n_rep == 1:
+        return x
+    return (
+        x[:, :, :, None, :].expand(bs, slen, num_key_value_heads, n_rep, head_dim).reshape(bs, slen, num_key_value_heads * n_rep, head_dim)
+    )
+
 class BaseAttention(nn.Module):
     def __init__(self, hidden_size: int):
         super().__init__()
@@ -444,15 +453,23 @@ class FlashAttentionFusedAttention(nn.Module):
     def __init__(self, config: DIYConfig):
         super().__init__()
 
-        assert config.hidden_size % config.num_heads == 0
+        
         self.hidden_size = config.hidden_size
         self.num_heads = config.num_heads
-        self.head_dim = config.hidden_size // config.num_heads
+        self.num_key_value_heads = config.num_key_value_heads
+
         self.max_seq_len = config.max_seq_len
         self.dropout = config.dropout
+        
+        assert config.hidden_size % config.num_heads == 0
+        assert config.num_heads % config.num_key_value_heads == 0
+
+        self.head_dim = self.hidden_size // self.num_heads
+        self.n_rep = self.num_heads // self.num_key_value_heads
 
         # fused QKV
-        self.qkv_proj = nn.Linear(self.hidden_size, 3 * self.hidden_size, bias=False)
+        self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
+        self.kv_proj = nn.Linear(self.hidden_size, 2 * self.num_key_value_heads * self.head_dim, bias=False)
         self.o_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
         self.resid_dropout = nn.Dropout(self.dropout)
 
@@ -483,13 +500,15 @@ class FlashAttentionFusedAttention(nn.Module):
         batch_size, seq_len, _ = x.shape
 
         # fused QKV
-        qkv = self.qkv_proj(x)
-        q, k, v = qkv.chunk(3, dim=-1)
+        q = self.q_proj(x)
+        kv = self.kv_proj(x)
+
+        k, v = kv.chunk(2, dim=-1)
 
         # reshape为 [B,H,L,D] 并 contiguous
         q = q.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
-        k = k.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
-        v = v.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
+        k = k.view(batch_size, seq_len, self.num_key_value_heads, self.head_dim).transpose(1, 2).contiguous()
+        v = v.view(batch_size, seq_len, self.num_key_value_heads, self.head_dim).transpose(1, 2).contiguous()
         
         if freqs_cos is not None and freqs_sin is not None:
             from .rope import apply_rotary_pos_emb
@@ -497,6 +516,8 @@ class FlashAttentionFusedAttention(nn.Module):
 
         if self.training:
             # 训练模式：构造 causal + padding mask
+            k = repeat_kv(k.transpose(1, 2), self.n_rep).transpose(1, 2)  # [B, num_heads, L, D]
+            v = repeat_kv(v.transpose(1, 2), self.n_rep).transpose(1, 2)  # [B, num_heads, L, D]
             total_len = k.size(2)
             attn_mask = torch.triu(torch.ones(seq_len, total_len, device=x.device, dtype=torch.bool), diagonal=1)
             attn_mask = attn_mask[None, None, :, :]  # [1,1,L,L]
@@ -508,9 +529,9 @@ class FlashAttentionFusedAttention(nn.Module):
         else:
             if cached is None:
                 cached = {
-                    "k": torch.zeros(batch_size, self.num_heads, self.max_seq_len, self.head_dim,
+                    "k": torch.zeros(batch_size, self.num_key_value_heads, self.max_seq_len, self.head_dim,
                                      device=x.device, dtype=x.dtype),
-                    "v": torch.zeros(batch_size, self.num_heads, self.max_seq_len, self.head_dim,
+                    "v": torch.zeros(batch_size, self.num_key_value_heads, self.max_seq_len, self.head_dim,
                                      device=x.device, dtype=x.dtype),
                 }
                 if seq_len > 1:
@@ -533,6 +554,8 @@ class FlashAttentionFusedAttention(nn.Module):
                 k = cached["k"][:, :, :cached_pos + 1, :]
                 v = cached["v"][:, :, :cached_pos + 1, :]
 
+            k = repeat_kv(k.transpose(1, 2), self.n_rep).transpose(1, 2)  # [B, num_heads, L, D]
+            v = repeat_kv(v.transpose(1, 2), self.n_rep).transpose(1, 2)  # [B, num_heads, L, D]
             attn_mask = None
 
         # scaled dot product attention

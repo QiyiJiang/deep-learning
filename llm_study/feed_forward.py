@@ -1,7 +1,7 @@
 import torch
 from torch import nn
-from typing import Optional
 from .config import DIYConfig
+
 
 class FeedForward(nn.Module):
     """标准 FeedForward 层：Linear → GELU → Dropout → Linear → Dropout。"""
@@ -39,12 +39,12 @@ class GatedFeedForward(nn.Module):
     def __init__(self, config: DIYConfig):
         super().__init__()
         self.hidden_size = config.hidden_size
-        self.intermediate_size = config.intermediate_size
+        self.intermediate_size = 64 * ((int(config.hidden_size * 8 / 3) + 64 - 1) // 64)
 
         self.linear_gate = nn.Linear(self.hidden_size, self.intermediate_size)
         self.linear_up = nn.Linear(self.hidden_size, self.intermediate_size)
         self.linear_down = nn.Linear(self.intermediate_size, self.hidden_size)
-        self.activation = nn.GELU()
+        self.activation = nn.SiLU()
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

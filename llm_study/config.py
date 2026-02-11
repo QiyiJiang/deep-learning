@@ -10,11 +10,11 @@ class DIYConfig:
     # 模型结构（默认 ~100M 参数：512 hidden, 23 layers, 8 heads, 2048 FFN）
     vocab_size: int = 6400
     hidden_size: int = 512
-    num_layers: int = 23
+    num_layers: int = 8
     num_heads: int = 8
-    intermediate_size: int = 2048
+    num_key_value_heads: int = 2
     max_seq_len: int = 2048
-    dropout: float = 0.1
+    dropout: float = 0.0
     eps: float = 1e-5
     device: str = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 

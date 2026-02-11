@@ -9,7 +9,7 @@ TOKENIZER_DIR = "/home/qiyijiang/deep-learning/llm_study"
 
 
 def main():
-    checkpoint_path = "/home/qiyijiang/deep-learning/checkpoints/diy_checkpoint_step_554000.pth"
+    checkpoint_path = "/home/qiyijiang/deep-learning/checkpoints/diy_checkpoint_last.pth"
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     config = DIYConfig(**checkpoint["config"])
     model = DIYForCausalLM(config)
