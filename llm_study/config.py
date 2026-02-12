@@ -30,7 +30,7 @@ class DIYConfig:
     default_batch_size: int = 32
     default_save_step: int = 100000
     default_pretrain_data_path: str = "dataset/pretrain_hq.jsonl"
-    default_sft_data_path: str = "dataset/sft_mini_512_15.jsonl"
+    default_sft_data_path: str = "dataset/sft_mini_512.jsonl"
     default_checkpoints_dir: str = "checkpoints"
     default_num_epochs: int = 3
     default_demo_batch_size: int = 2
