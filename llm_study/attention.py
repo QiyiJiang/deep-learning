@@ -519,13 +519,14 @@ class FlashAttentionFusedAttention(nn.Module):
             k = repeat_kv(k.transpose(1, 2), self.n_rep).transpose(1, 2)  # [B, num_heads, L, D]
             v = repeat_kv(v.transpose(1, 2), self.n_rep).transpose(1, 2)  # [B, num_heads, L, D]
             total_len = k.size(2)
-            attn_mask = torch.triu(torch.ones(seq_len, total_len, device=x.device, dtype=torch.bool), diagonal=1)
-            attn_mask = attn_mask[None, None, :, :]  # [1,1,L,L]
 
             if seq_lengths is not None:
-                padding_mask = torch.arange(total_len, device=x.device)[None, :] >= seq_lengths[:, None]  # [B,L]
-                padding_mask = padding_mask[:, None, None, :]  # [B,1,1,L]
-                attn_mask = attn_mask | padding_mask
+                # SDPA 的 bool mask 语义：True=可见，False=不可见
+                key_pos = torch.arange(total_len, device=x.device)[None, :]          # [1, L]
+                valid_k = key_pos < seq_lengths[:, None]                             # [B, L]
+                attn_mask = valid_k[:, None, None, :]                                # [B, 1, 1, L]
+            else:
+                attn_mask = None
         else:
             if cached is None:
                 cached = {
@@ -559,7 +560,7 @@ class FlashAttentionFusedAttention(nn.Module):
             attn_mask = None
 
         # scaled dot product attention
-        att = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, is_causal=False, dropout_p=self.dropout if self.training else 0.0)
+        att = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, is_causal=self.training, dropout_p=self.dropout if self.training else 0.0)
 
         # 输出 reshape [B,H,L,D] -> [B,L,H*D]
         att = att.transpose(1, 2).contiguous().reshape(batch_size, seq_len, self.num_heads * self.head_dim)

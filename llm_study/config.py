@@ -14,7 +14,7 @@ class DIYConfig:
     num_heads: int = 8
     num_key_value_heads: int = 2
     max_seq_len: int = 2048
-    dropout: float = 0.0
+    dropout: float = 0.1
     eps: float = 1e-5
     device: str = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -22,7 +22,7 @@ class DIYConfig:
     rope_base: float = 1e6
 
     # 数据管道默认（datasets 未显式传 max_length 时使用，应 <= max_seq_len）
-    train_max_length: int = 512
+    train_max_length: int = 340
 
     # 示例脚本默认训练配置（examples 中 argparse 未指定时使用）
     default_lr: float = 5e-4

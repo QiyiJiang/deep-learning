@@ -1,4 +1,5 @@
 import json
+import random
 import torch
 from typing import Optional
 from torch.utils.data import Dataset, IterableDataset, get_worker_info
@@ -77,14 +78,24 @@ class SimplePretrainDataset(Dataset):
 
 
 class PretrainDataset(IterableDataset):
-    """流式预训练数据集。num_workers>0 时自动按行分片；建议传 tokenizer_path 避免多进程 tokenizer 问题。"""
+    """流式预训练数据集。num_workers>0 时自动按行分片；建议传 tokenizer_path 避免多进程 tokenizer 问题。
+    buffer_size: 若 >0，则每读满 buffer_size 条样本做一次 shuffle 再 yield，用于打乱顺序；0 或 None 表示不 shuffle。
+    """
 
-    def __init__(self, file_path, tokenizer=None, tokenizer_path=None, max_length: Optional[int] = None):
+    def __init__(
+        self,
+        file_path,
+        tokenizer=None,
+        tokenizer_path=None,
+        max_length: Optional[int] = None,
+        buffer_size: Optional[int] = None,
+    ):
         assert tokenizer is not None or tokenizer_path is not None, "传 tokenizer 或 tokenizer_path 之一"
         self.tokenizer = tokenizer
         self.tokenizer_path = tokenizer_path
         self.max_length = _default_max_length(max_length)
         self.file_path = file_path
+        self.buffer_size = buffer_size or 0
 
     def _get_tokenizer(self):
         if self.tokenizer is not None:
@@ -98,6 +109,32 @@ class PretrainDataset(IterableDataset):
         num_workers = worker_info.num_workers if worker_info else 1
         tokenizer = self._get_tokenizer()
 
+        if self.buffer_size <= 0:
+            # 不打乱：与原来行为一致
+            with open(self.file_path, "r", encoding="utf-8") as f:
+                for idx, line in enumerate(f):
+                    if idx % num_workers != worker_id:
+                        continue
+                    try:
+                        data = json.loads(line)
+                        text = data["text"]
+                    except (json.JSONDecodeError, KeyError):
+                        continue
+                    enc = tokenizer(
+                        text,
+                        max_length=self.max_length,
+                        padding="max_length",
+                        truncation=True,
+                        return_tensors="pt",
+                    )
+                    input_ids = enc["input_ids"].squeeze(0)
+                    labels = input_ids.clone()
+                    loss_mask = (input_ids != tokenizer.pad_token_id).long()
+                    yield input_ids, labels, loss_mask
+            return
+
+        # buffer shuffle：读满 buffer_size 条后 shuffle 再 yield
+        buffer: list = []
         with open(self.file_path, "r", encoding="utf-8") as f:
             for idx, line in enumerate(f):
                 if idx % num_workers != worker_id:
@@ -117,7 +154,18 @@ class PretrainDataset(IterableDataset):
                 input_ids = enc["input_ids"].squeeze(0)
                 labels = input_ids.clone()
                 loss_mask = (input_ids != tokenizer.pad_token_id).long()
-                yield input_ids, labels, loss_mask
+                buffer.append((input_ids, labels, loss_mask))
+
+                if len(buffer) >= self.buffer_size:
+                    random.shuffle(buffer)
+                    for item in buffer:
+                        yield item
+                    buffer.clear()
+
+        if buffer:
+            random.shuffle(buffer)
+            for item in buffer:
+                yield item
 
 
 class SimpleSFTDataset(Dataset):
